@@ -1,0 +1,366 @@
+function [X_fts,Y_fts,A_ptj,S_fpj,M_js,distorsion]=NMF_factorization_win_test_ajmm_p2(X_fts,NMFparams,NMF_inic,pinta)
+% [X_fts,Y_fts,A_ptj,S_fpj,M_js,distorsion]=NMF_factorization_win_test(X_fts,NMFparams,NMF_inic,pinta)
+% Perform the Augmented NMF factorization using the gradient descent
+% algorithm.
+%
+% Further info can be found in:
+% "Nonnegative signal factorization with learnt instrument models for sound
+%  source separation in close-microphone recordings"
+%  JJ Carabias-Orti, M Cobos, P Vera-Candeas, FJ Rodr???guez-Serrano
+%  EURASIP Journal on Advances in Signal Processing 2013 (1), 1-16
+%
+% Input arguments:
+%	X_fts --> mulhannel signal spectrogram
+%   NMFparams --> NMF factorization parameters (from userParameters)
+%   NMF_inic --> NMF fixed components
+%   pinta --> plot the algorithm process
+%
+% Output:
+%   X_fts --> mulhannel signal spectrogram
+%   Y_fts --> estimated mulhannel signal spectrogram
+%   A_ptj --> NMF Gains
+%   S_fpj --> NMF Basis Functions
+%   M_js --> Panning Matrix
+%   distorsion --> System distortion
+%
+% Julio Carabias. January 2014
+
+% global B j_max p_max f_max t_max n_max;
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+NUM_MAX_ITER = NMFparams.NUM_MAX_ITER;   % Num Iter
+B = NMFparams.B;
+
+f_max  = NMFparams.f_max;
+t_max  = NMFparams.t_max;
+s_max  = NMFparams.s_max;
+p_max  = NMFparams.p_max;
+j_max  = NMFparams.j_max;
+%lambda = NMFparams.lambda;
+l = NMFparams.lambda
+t_ventana = NMFparams.t_ventana
+
+%% Normalizamos la senal de entrada
+if (B==1)
+    norma_ft = (sum(sum(X_fts.^B))^(1/B));
+    Xn_fts = X_fts/norma_ft;
+elseif(B~=0)
+    norma_ft = (sum(sum(X_fts.^B))^(1/B)) / ((B*(B-1)).^(1/B));
+    Xn_fts = X_fts/norma_ft;
+else
+    norma_ft = size(X_fts,1)*size(X_fts,2);
+    Xn_fts = X_fts/norma_ft;
+end
+
+%% Inicilalizamos matriz de bases y ganancias
+if isfield(NMF_inic,'S_fpj'),
+    S_fpj=NMF_inic.S_fpj;
+else
+    % Genero S_fpj Inicial
+    [S_fpj]=rand(f_max,p_max,j_max) + ones(f_max,p_max,j_max);
+end;
+
+%Obtengo los picth minimos de cada instrumento
+p_rangoj=ones(NMFparams.j_max,2);
+for jj=1:NMFparams.j_max,
+    pos=find(sum(S_fpj(:,:,jj),1)>0);
+    if ~isempty(pos),
+        p_rangoj(jj,1)=pos(1);
+        p_rangoj(jj,2)=pos(end);
+    else
+        p_rangoj(jj,1)=1;
+        p_rangoj(jj,1)=p_max;
+    end;
+end;
+NMFparams.p_rangoj = p_rangoj;
+
+% Inicializo A
+if isfield(NMF_inic,'A_ptj'),
+    A_ptj=NMF_inic.A_ptj;
+else
+    A_ptj=rand(p_max,t_max,j_max) + ones(p_max,t_max,j_max);
+    % Pongo a cero hasta el pitch minimo de cada instrumento
+    for jj=1:NMFparams.j_max,
+        p_out = setdiff([1:p_max],[p_rangoj(jj,1):p_rangoj(jj,2)]);
+        A_ptj(p_out,:,jj)=0;
+    end;
+end;
+
+% Inicializo M
+if isfield(NMF_inic,'M_js'),
+    M_js=NMF_inic.M_js;
+else
+    M_js = rand(j_max,s_max) + ones(j_max,s_max);
+end;
+
+%% Inicializo real_clase_ext
+if isfield(NMF_inic,'real_clase_ext'),
+    real_clase_ext=NMF_inic.real_clase_ext;
+else
+    % Genero real_clase_ext Inicial
+    [real_clase_ext]=rand(p_max,t_max,j_max) + ones(p_max,t_max,j_max);
+end;
+
+%% Reducir complejidad
+k_min=1000000;
+k_max=0;
+
+for m = 1:j_max
+    col = sum(S_fpj(:,:,m),1);
+    dzeros = find(col~=0);
+    
+    if dzeros(1) < k_min
+        k_min = dzeros(1);
+    end
+    
+    if dzeros(end) > k_max
+        k_max = dzeros(end);
+    end
+end
+
+S_fpj = S_fpj(:,k_min:k_max,:);
+A_ptj = A_ptj(k_min:k_max,:,:);
+real_clase_ext = real_clase_ext(k_min:k_max,:,:);
+p_ori=p_max;
+p_max = k_max-k_min+1;
+clear  col dzeros;
+
+%% Normalizaciones
+eSp_1pj = sqrt(sum(S_fpj.^2,1));
+Sn_fpj = S_fpj./repmat(eSp_1pj,f_max,1);
+Sn_fpj(~isfinite(Sn_fpj))=0;
+
+eSp_1pj = ones(1,p_max,j_max);
+
+eAt_1tj = sqrt(sum(A_ptj.^2,1));
+An_ptj = A_ptj./repmat(eAt_1tj,p_max,1);
+An_ptj(~isfinite(An_ptj))=0;
+
+eAt_1tj = ones(1,t_max,j_max);
+
+[Y_fts]=nmf_inc_multi_generateY_ajmm(NMFparams,Sn_fpj,An_ptj,M_js,eSp_1pj,eAt_1tj);
+
+if (B==1)
+    norma_Yft = (sum(sum(Y_fts.^B))^(1/B));
+%     Y_fts = X_fts/norma_Yft;
+elseif(B~=0)
+    norma_Yft = (sum(sum(Y_fts.^B))^(1/B)) / ((B*(B-1)).^(1/B));
+%     Y_fts = X_fts/norma_Yft;
+else
+    norma_Yft = size(Y_fts,1)*size(Y_fts,2);
+%     Y_fts = X_fts/norma_Yft;
+end
+
+%eSp_1pj = eSp_1pj * norma_ft/norma_Yft;
+eSp_1pj = eSp_1pj/norma_Yft;
+[Y_fts]=nmf_inc_multi_generateY_ajmm(NMFparams,Sn_fpj,An_ptj,M_js,eSp_1pj,eAt_1tj);
+
+%% Polifonia 3D
+% AAT_pptj = zeros(p_max,p_max,t_max,j_max);
+M_pptj = zeros(p_max,p_max,t_max,j_max);
+M_pptj_aux = zeros(p_max,p_max,t_max,j_max);
+AAT_pptj = ndSparse.build([p_max p_max t_max j_max],0);
+% M_pptj = ndSparse.build([p_max p_max t_max j_max],0);
+
+
+n_ventana=round(t_ventana/NMFparams.fftparams.ts);
+n_ventana=ceil( (n_ventana-NMFparams.fftparams.windowsize/2)/NMFparams.fftparams.salto )+2;
+
+% n_ventana=ceil((((0.064+t_ventana)/0.128)-1)*4+1);
+% n_ventana=max(n_ventana,0);
+
+for jj=1:j_max
+    AAT_pptj(:,:,:,jj)  = tprod(squeeze(An_ptj(:,:,jj)),[1,3],squeeze(An_ptj(:,:,jj)),[2,3]);
+    M_pptj(:,:,:,jj)    = tprod(squeeze(real_clase_ext(:,:,jj)),[1,3],squeeze(real_clase_ext(:,:,jj)),[2,3]);
+      
+    for t=1:t_max
+        % AAT_pptj(:,:,t,jj) = An_ptj(:,t,jj)*(An_ptj(:,t,jj)');
+        % M_pptj(:,:,t,jj) = real_clase_ext(:,t,jj)*real_clase_ext(:,t,jj)';      
+        
+        if (t <= n_ventana+1)
+            M_pptj_aux(:,:,t,jj) = sum(M_pptj(:,:,1:t+n_ventana,jj),3);
+        elseif (t_max-t <= n_ventana)
+            M_pptj_aux(:,:,t,jj) = sum(M_pptj(:,:,t-n_ventana-1:t_max,jj),3);
+        else
+            M_pptj_aux(:,:,t,jj) = sum(M_pptj(:,:,t-n_ventana-1:t+n_ventana,jj),3);
+        end
+    end
+end
+
+M_pptj = M_pptj_aux;
+M_pptj(find(M_pptj>0))=1;
+
+amplitud = sum(M_pptj,2);
+amplitud=1./amplitud;
+amplitud(amplitud==inf)=0;
+
+M_pptj=bsxfun(@times,M_pptj,amplitud);
+% max_j = max(max(max(M_pptj)));
+% 
+% M_pptj(find(M_pptj==max_j(1)))=1;
+% M_pptj(find(M_pptj==max_j(2)))=1;
+% M_pptj(find(M_pptj==max_j(3)))=1;
+% M_pptj(find(M_pptj==max_j(4)))=1;
+% 
+% M_pptj(find((M_pptj>0) .* (M_pptj<1)))=2/3;
+
+M_pptj=ndSparse(M_pptj);
+
+clear M_pptj_aux amplitud;
+
+%% Costes
+D_B = zeros(NUM_MAX_ITER+1,1);
+D_SB = zeros(NUM_MAX_ITER+1,1);
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+lambda=l;
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+if B==1
+    D_B(1) = sum(sum((Xn_fts .* log((Xn_fts./(Y_fts+eps))+eps)) - Xn_fts + Y_fts));
+elseif B==0
+    D_B(1) = sum(sum((Xn_fts./(Y_fts+eps)) - log((Xn_fts./(Y_fts+eps))+eps) - 1));
+else
+    dist = sum( (1/(B*(B-1))) * (Xn_fts.^B + (B-1)*(Y_fts+eps).^B- B*Xn_fts.*(Y_fts+eps).^(B-1)) ,1);
+    D_B(1) = sum(dist);
+end
+
+op=-AAT_pptj.*M_pptj;
+op=full(op);
+
+D_SB(1) = (1/(j_max * t_max)) * sum(sum(sum(sum(op,1),2),4) );
+
+
+SB_num = zeros(p_max,t_max,j_max);
+SB_den = zeros(p_max,t_max,j_max);
+
+%**************************************************************************
+if l~=0
+    lambda = l * (dist(1,:)/D_SB(1)) * t_max;
+    lambda = abs(lambda);
+    %lambda=l;
+    % Si AAT_pptj = M_pptj entonces no se aplica restriccion
+    if ~isfinite(lambda)
+        lambda=0;
+    end
+else
+    lambda = zeros(1,t_max);
+end
+
+D_SB(1) = sum( (lambda/(j_max * t_max)) .* squeeze(sum(sum(sum(op,1),2),4))' );
+
+%**************************************************************************
+clear op;
+%% Iteraciones
+for ite = 1:NUM_MAX_ITER,
+    
+    fprintf('\n\t\tIteracion: %i',ite);
+    
+%     if l~=0
+%         lambda = l * (dist(1,:)/D_SB(ite)) * t_max;
+%         lambda = abs(lambda);
+%         %lambda=l;
+%         
+%         % Si AAT_pptj = M_pptj entonces no se aplica restriccion
+%         lambda(~isfinite(lambda))=0;
+%     else
+%         lambda = zeros(1, t_max);
+%     end
+    
+    for jj=1:j_max
+        %% Activations
+        Y_fts_cb2 = 0*Y_fts;
+        Y_fts_cb2((Y_fts~=0)) = Y_fts((Y_fts~=0)).^(B-2);
+        Y_fts_cb1 = 0*Y_fts;
+        Y_fts_cb1((Y_fts~=0)) = Y_fts((Y_fts~=0)).^(B-1);
+        
+        Sne_fpj(:,:,jj) = Sn_fpj(:,:,jj) * diag( eSp_1pj(:,:,jj));
+        KL_num(:,:,jj) = Sne_fpj(:,:,jj)' * ( (Y_fts_cb2) .* Xn_fts) * (diag( eAt_1tj(:,:,jj)))';
+        KL_den(:,:,jj) = Sne_fpj(:,:,jj)' * (Y_fts_cb1) * (diag( eAt_1tj(:,:,jj)))';
+        
+        %Restriccion
+        for t=1:t_max
+            %SB_num(:,:,jj)=tprod(M_pptj(:,:,:,jj),[1 -1 2],AnK_ptj(:,:,jj),[-1 2]);
+            %SB_num=tprod(SB_num,[1 2 3],repmat((1/eAt_1tj),[size(SB_num,1),1,1]),[1 2 3]);
+            
+            SB_num(:,t,jj) = (2 * lambda(t)/(j_max * t_max)) * M_pptj(:,:,t,jj)  * An_ptj(:,t,jj);
+            %SB_den(:,t,jj) = (2 * lambda/((p_max-1)*t_max)) * ones(p_max,p_max) * An_ptj(:,t,jj);
+        end
+    end
+    
+    %% Actualization
+    delta = ((KL_num+SB_num)./(KL_den+SB_den));
+    delta(~isfinite(delta)) = 0;
+    
+    An_ptj = An_ptj .* delta;
+    
+    % normalizations
+    eA_temp = sqrt(sum(An_ptj.^2,1));
+    eA_temp(~isfinite(eA_temp)) = 0;
+    rep=repmat(eA_temp,p_max,1);
+    
+    An_ptj(rep~=0) = An_ptj(rep~=0)./rep(rep~=0);
+    An_ptj(~isfinite(An_ptj))=0;
+    
+    eAt_1tj = eAt_1tj.*eA_temp;
+    
+    %% Reconstruction
+    [Y_fts]=nmf_inc_multi_generateY_ajmm(NMFparams,Sn_fpj,An_ptj,M_js,eSp_1pj,eAt_1tj);
+    
+    %% Costs
+    if B==1
+        D_B(ite+1) = sum(sum((Xn_fts .* log((Xn_fts./(Y_fts+eps))+eps)) - Xn_fts + Y_fts));
+    elseif B==0
+        D_B(ite+1) = sum(sum((Xn_fts./(Y_fts+eps)) - log((Xn_fts./(Y_fts+eps))+eps) - 1));
+    else
+        dist = sum( (1/(B*(B-1))) * (Xn_fts.^B + (B-1)*(Y_fts+eps).^B- B*Xn_fts.*(Y_fts+eps).^(B-1)) );
+        D_B(ite+1) = sum(dist);
+    end
+    
+    AAT_pptj = full(AAT_pptj);
+    for jj=1:j_max
+        for t=1:t_max
+            AAT_pptj(:,:,t,jj) = An_ptj(:,t,jj)*(An_ptj(:,t,jj)');
+        end
+    end
+    AAT_pptj = ndSparse(AAT_pptj);
+    
+    
+    op=-AAT_pptj.*M_pptj;
+    op=full(op);
+
+%     D_SB(ite+1) = (1/(j_max * t_max)) * sum(sum(sum(sum(op,1),2),4) );
+    D_SB(ite+1) =  sum( (lambda/(j_max * t_max)) .* squeeze(sum(sum(sum(op,1),2),4))' );
+    clear op;
+    
+%     D_SB(ite+1) = (lambda/(t_max*(p_max-1)))*(sum(sum(sum(sum(AAT_pptj.*(ones(p_max,p_max,t_max,j_max)-M_pptj))))));
+    
+    distorsion=sum(D_B,2)+D_SB;
+    
+end
+
+A_ptj=zeros(p_max,t_max,j_max);
+
+for jj=1:j_max
+    A_ptj(:,:,jj) = diag(eSp_1pj(:,:,jj)) * An_ptj(:,:,jj) * diag(eAt_1tj(:,:,jj));
+end
+
+
+%% Reconstruir complejidad
+S_fpj_aux = zeros(f_max,p_ori,j_max);
+S_fpj_aux(:,k_min:k_max,:) = Sn_fpj;
+S_fpj = S_fpj_aux;
+clear S_fpj_aux;
+
+A_ptj_aux = zeros(p_ori,t_max,j_max);
+A_ptj_aux(k_min:k_max,:,:) = A_ptj;
+A_ptj = A_ptj_aux;
+clear A_ptj_aux;
+
+%%
+% S_fpj=Sn_fpj;
+X_fts=Xn_fts;
+
+save(['../../OUTPUTS_bruckner_B1/' NMF_inic.filename ' - Resultados_NMF - lambda' num2str(l) ' - t_ventana' num2str(t_ventana) '.mat']);
+
+return;

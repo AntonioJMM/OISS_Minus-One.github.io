@@ -1,0 +1,252 @@
+% Script to perform the sourceSeparation. - Score Informed Approach
+%
+% Further info can be found in:
+% "Nonnegative signal factorization with learnt instrument models for sound
+%  source separation in close-microphone recordings"
+%  JJ Carabias-Orti, M Cobos, P Vera-Candeas, FJ Rodr�guez-Serrano
+%  EURASIP Journal on Advances in Signal Processing 2013 (1), 1-16
+%
+% Input arguments:
+%	see userparameter.m
+%
+% Output:
+%   separated signals stored in the path given by userparameters
+%
+% PHENICX - SOURCE SEPARATION
+% MTG-UPF 2014, Julio Carabias
+
+%% Add NMF routines to the path
+addpath(genpath([pwd filesep 'NMF_INC_MULTI']));
+
+%% Load parameters
+beta = NMFparams.B;
+strB = strrep(num2str(NMFparams.B),'.','_');
+load wind_excit; % Window Transform
+NMFparams.wind_excit=wind_excit;
+
+%% LOAD INTRUMENT MODELS FROM RWC DATABASE (1 SEMITONE LOG. FREQ RESOLUTION)
+fprintf('\nLoading instrument models ... ');
+
+% Models from BD Bach10
+load([ruta_modelos '151VNNOM_modelB' strB '.mat'],'C_pmj');
+C_pmj_aux = C_pmj;
+load([ruta_modelos '311CLNOM_modelB' strB '.mat'],'C_pmj');
+C_pmj_aux(:,:,2) = C_pmj;
+load([ruta_modelos '271TSNOM_modelB' strB '.mat'],'C_pmj');
+C_pmj_aux(:,:,3) = C_pmj;
+load([ruta_modelos '301FGNOM_modelB' strB '.mat'],'C_pmj');
+C_pmj_aux(:,:,4) = C_pmj;
+
+% Models from BD Aalto
+% load([ruta_modelos '301FGNOM_modelB' strB '.mat'],'C_pmj');
+% C_pmj_aux = C_pmj;
+% load([ruta_modelos '171VCNOM_modelB' strB '.mat'],'C_pmj');
+% C_pmj_aux(:,:,2) = C_pmj;
+% load([ruta_modelos '311CLNOM_modelB' strB '.mat'],'C_pmj');
+% C_pmj_aux(:,:,3) = C_pmj;
+% load([ruta_modelos '181CBNOM_modelB' strB '.mat'],'C_pmj');
+% C_pmj_aux(:,:,4) = C_pmj;
+% load([ruta_modelos '331FLNOM_modelB' strB '.mat'],'C_pmj');
+% C_pmj_aux(:,:,5) = C_pmj;
+% load([ruta_modelos '241HRNOM_modelB' strB '.mat'],'C_pmj');
+% C_pmj_aux(:,:,6) = C_pmj;
+% load([ruta_modelos '291OBNOM_modelB' strB '.mat'],'C_pmj');
+% C_pmj_aux(:,:,7) = C_pmj;
+% load([ruta_modelos '211TRNOM_modelB' strB '.mat'],'C_pmj');
+% C_pmj_aux(:,:,8) = C_pmj;
+% load([ruta_modelos '161VLNOM_modelB' strB '.mat'],'C_pmj');
+% C_pmj_aux(:,:,9) = C_pmj;
+% load([ruta_modelos '151VNNOM_modelB' strB '.mat'],'C_pmj');
+% C_pmj_aux(:,:,10) = C_pmj;
+%
+% C_pmj_aux(:,:,[1 2 3 4 5 6 9 10 7 8])=C_pmj_aux(:,:,[1 2 3 4 5 6 7 8 9 10]);
+
+%Mozart
+% C_pmj_aux=C_pmj_aux(:,:,1:8);
+
+C_pmj = C_pmj_aux;
+clear C_pmj_aux;
+
+%% EXTEND THE MODELS TO 1/4 SEMITONE LOG. FREQ RESOLUTION
+NMFparams.j_max = size(C_pmj,3);
+if param.midi_inc>1,
+    [C_pmj] = BHC_INCmodel(C_pmj,param.midi_inc);
+end;
+fprintf('Done');
+
+
+%% ANALIZE THE INPUT SIGNALS
+wav_D = dir([ruta_wav,'01-AchGottundHerr_mix.wav']);
+wav_nfiles=length(wav_D);
+mid_D = dir([ruta_midi,'01-AchGottundHerr.mid']);
+mid_nfiles=length(mid_D);
+% if wav_nfiles~=mid_nfiles,
+%     error(1, 'NUMBER WAV / MIDI DOES NOT COINCIDE');
+% end;
+GT_D = dir([ruta_txt,'*.txt']);
+GT_nfiles=length(GT_D);
+% if wav_nfiles~=GT_nfiles,
+%     error(1, 'NUMBER WAV / TXT DOES NOT COINCIDE');
+% end;
+
+for file=1:wav_nfiles,
+    
+    filename=wav_D(file).name(1:end-4);
+    info = audioinfo([ruta_wav filename '.wav']);
+    fs=info.SampleRate;
+    nsamples = info.TotalSamples;
+    
+    fprintf('\nStarting Signal Analysis for %s ... ',filename );
+    
+    fprintf('\n\tReading WAV file ... ');
+    [x,fs]=audioread([ruta_wav filename '.wav']);
+    
+    %% Compute the spectrogram
+    fprintf('\n\tComputing the magnitude spectrogram ... ');
+    [param]=getParametrosMusica(param,nsamples,fs);
+    [cfreq_amplitudes,miditobins]=computeCfreqFast(x,param);
+    fprintf('Done');
+    
+    %% INICIALIZE BASES
+    fprintf('\n\tInitializing the bases ... ');
+    NMF_inic=[];
+    [NMFparams,X_ft]=nmf_inc_multi_setParamsINC(cfreq_amplitudes,param,NMFparams);
+    [NMF_inic.S_fpj]=BHC_generateSwinINC(NMFparams,C_pmj);
+    fprintf('Done');
+    
+    %% INICIALIZE SCORE INFORMED GAINS
+    fprintf('\n\tInitializing the gains ... ');
+    
+    % Ground-truth transcription from txt
+    % THIS IS PERFECT GROUND-TRUTH USING YIN F0-ESTIMATOR OVER THE
+    % SOLO FILES, YOU MAY NOT NEED TO EXTEND THE REAL_CLASE MATRIX
+    % SINCE THERE IS NOT UNCERTAINTLY HERE!
+    
+    % Carga BD Bach10
+    GT = load([ruta_txt GT_D(file).name]);
+    
+    % Carga DB Aalto
+    %         [GT]=loadAaltoBD_txt(ruta_txt);
+    
+    nsources = numel(unique(GT(:,1)));
+    inst = GT(:,1);
+    notes = GT(:,2);
+    onsets = round((GT(:,3)/1000)*fs / param.salto);
+    onsets = max(1,onsets);
+    offsets = round((GT(:,4)/1000)*fs / param.salto);
+    offsets = min(param.n_tramas, offsets);
+    real_clase = zeros(param.midi_max,param.n_tramas,nsources);
+    for n=1:length(notes)
+        real_clase(notes(n),onsets(n):offsets(n),inst(n)) = 1;
+    end;
+    real_clase = real_clase(param.midi_min:end,:,:);
+    
+    %     % Ground-truth transcription from MIDI
+    %     mid_filename=mid_D(file).name(1:end-4);
+    %     nmat = readmidi_java([ruta_midi mid_filename '.mid']);
+    %
+    %     %Error del midi el instrumento 11 es el 10.
+    %     nmat(find(nmat(:,3)==11),3)=10;
+    %
+    %     % Genera PianoRoll like structure from MIDI
+    %     nsources = numel(mchannels(nmat));
+    %     real_clase = zeros(param.midi_max,param.n_tramas,nsources);
+    %     for source = 1:nsources,
+    %         real_clase_temp=getNMATdata(param,0,nmat(channel(nmat)==source,:))';
+    %         real_clase(:,:,source) = real_clase_temp;
+    %     end;
+    %     real_clase = real_clase(param.midi_min:end,:,:);
+    %
+    %     % Considero posible error de alinemaiento
+    %     extended_real_clase = extendRealClase(real_clase,30);
+    %     real_clase = (extended_real_clase>0);
+    %     clear real_clase_temp extended_real_clase;
+    
+    % Extiendo el MIDI para resolucion 1/4 semitono
+    NMF_inic.A_ptj=zeros(NMFparams.p_max,NMFparams.t_max,NMFparams.j_max);
+    for jj=1:NMFparams.j_max,
+        %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+        % BD Bach10: 1 - Violin , 2 - Clarinet , 3 - Saxo , 4 - Bassoon
+        %
+        % BD Aalto: 1 - Bassosn , 2 - Cello , 3 - Clarinet , 4 - Contrabass,
+        % 5 - Flute , 6 - Horn  , 7 - Viola , 8 - Violin , 9 - Oboe, 10 -
+        % Trumpet
+        %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+        if ismember(jj,[1]), % INSTRUMENTS WITH STRONG VIBRATO
+            % TAKE 1/2 SEMITONES ABOVE AND BELOW THE CURRENT NOTE
+            for p=1:(param.midi_max-param.midi_min+1),
+                
+                pos_ini=(p-1)*param.midi_inc-(1.5*param.midi_inc-1);
+                pos_ini=max(pos_ini,1);
+                pos_fin=((p-1)*param.midi_inc+(1.5*param.midi_inc));
+                pos_fin=min(pos_fin,size(NMF_inic.A_ptj,1));
+                
+                NMF_inic.A_ptj(pos_ini:pos_fin,:,jj) = ...
+                    NMF_inic.A_ptj(pos_ini:pos_fin,:,jj) + repmat(real_clase(p,:,jj),length(pos_ini:pos_fin),1);
+            end;
+        elseif ismember(jj,[4]), % INSTRUMENTS WITH WEAK VIBRATO
+            % TAKE 1/4 SEMITONES ABOVE AND BELOW THE CURRENT NOTE
+            for p=1:(param.midi_max-param.midi_min+1),
+                
+                pos_ini=(p-1)*param.midi_inc-(param.midi_inc-1);
+                pos_ini=max(pos_ini,1);
+                pos_fin=((p-1)*param.midi_inc+(param.midi_inc));
+                pos_fin=min(pos_fin,size(NMF_inic.A_ptj,1));
+                
+                NMF_inic.A_ptj(pos_ini:pos_fin,:,jj) = ...
+                    NMF_inic.A_ptj(pos_ini:pos_fin,:,jj) + repmat(real_clase(p,:,jj),length(pos_ini:pos_fin),1);
+            end;
+        else % INSTRUMENTS WITH NO VIBRATO
+            % TAKE ONLY THE CURRENT SEMITONE
+            for p=1:(param.midi_max-param.midi_min+1),
+                pos_ini=(p-1)*param.midi_inc-(param.midi_inc/2-1);
+                pos_ini=max(pos_ini,1);
+                pos_fin=((p-1)*param.midi_inc+(param.midi_inc/2));
+                pos_fin=min(pos_fin,size(NMF_inic.A_ptj,1));
+                
+                NMF_inic.A_ptj(pos_ini:pos_fin,:,jj) = ...
+                    NMF_inic.A_ptj(pos_ini:pos_fin,:,jj) + repmat(real_clase(p,:,jj),length(pos_ini:pos_fin),1);
+            end;
+        end;
+    end;
+    
+    NMF_inic.A_ptj = (NMF_inic.A_ptj>0); % Just in case
+    
+    %NMF_inic.A_ptj=ones(NMFparams.p_max,NMFparams.t_max,NMFparams.j_max);
+    
+    clear real_clase;
+    fprintf('Done');
+    
+    %% AUGMENTED NMF - GRADIENT DESCENT SIGNAL DECOMPOSTION
+    fprintf('\n\tComputing Factorization ... ');
+    % M_js matriz panning not used for monoaural (i.e. values set to 1 for the single channel case)
+    NMF_inic.M_js = ones(NMFparams.j_max,NMFparams.s_max);
+    [X_ft,Y_ft,A_ptj,S_fpj,M_js,distorsion]=NMF_factorization_win_test(X_ft,NMFparams,NMF_inic,pinta);
+    fprintf('Done');
+    
+    %% PERFORM SEPARATION - WIENER FILTERING
+    ext = '.wav';
+    %     outname={['bassoon',ext],['cello',ext],['clarinet',ext],['contrabass',ext],['flute',ext],['horn',ext],['viola',ext],['violin',ext],['oboe',ext],['trumpet',ext]};
+    %     outname={['bassoon',ext],['cello',ext],['clarinet',ext],['contrabass',ext],['flute',ext],['horn',ext],['viola',ext],['violin',ext]};
+    outname={['violin',ext],['clarinet',ext],['saxo',ext],['basson',ext]};
+    
+    
+    % Prepare the predominant channel per source
+    fprintf('\n\tPerforming Separation ... ');
+    
+    % Only one channel --> 1
+    [senales]=senal_extraction_INC(x,NMFparams.fftparams,1,A_ptj,S_fpj,M_js);
+    
+    for jj=1:NMFparams.j_max,
+        % To avoid clipping
+        %audiowrite([outpath filesep num2str(file) '-' outname{jj}],senales(:,jj)/(1.1*max(abs(senales(:,jj)))),fs);
+        
+        audiowrite([outpath filesep '0' num2str(file) '-' outname{jj}],senales(:,jj),fs);
+        fprintf('\n\t\t %s saved OK ',outname{jj});
+    end;
+    clear NMF_inic X_ft Y_ft A_ptj S_fpj distorsion;
+end;
+
+save([outpath '/Resultados_Separacion.mat']);            
+
+fprintf('\nThanks for using me');

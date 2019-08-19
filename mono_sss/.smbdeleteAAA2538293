@@ -1,0 +1,91 @@
+% SOURCE SEPARATION - Aalto Orchestra
+% UJA 2016, Antonio J. Muñoz
+
+clear;clc;
+%% USER --> FFT INPUT PARAMETERS
+param.midi_inc=4;
+param.midi_min=24;
+param.midi_max=137;
+param.t_trama=0.128;
+param.t_salto=0.032;
+param.longitud_frec=8192;
+
+%% Seleccionar carpetas
+% path_nameOriginal = uigetdir('..', 'Selecciona los originales');
+% path_txt = uigetdir('..', 'Selecciona la carpeta de Ground Truth');
+% path_out = uigetdir('..', 'Selecciona la carpeta de salida');
+
+path_txt = '/Volumes/jmontoro/Separacion 3D/BBDD/Aalto_Orchestra_2016/scores/anechoic/beethoven';
+path_nameOriginal = '/Volumes/jmontoro/Separacion 3D/BBDD/Aalto_Orchestra_2016/audio/anechoic/beethoven';
+path_out = '/Volumes/jmontoro/Separacion 3D/BBDD/Aalto_Orchestra_2016/audio/anechoic/beethoven_ajmm';
+
+%% Cargar ficheros
+txtFiles = dir([path_txt,'/*_g.txt']);
+DOriginal = dir([path_nameOriginal '/*.wav']);
+DOriginal=[DOriginal(1:6,:); DOriginal(8:end,:)];
+
+ins_src=[];
+
+for i= 7:7%size(DOriginal,1)
+    disp(i);
+    [y,fs]=audioread([path_nameOriginal filesep DOriginal(i).name]);
+    
+    %% Parameters of the spectrogram
+    [param]=getParametrosMusica(param,size(y,1),fs);
+    
+    %% Limpiar Ruido con ventana
+    %     %% Leer Ground Truth
+    %     table = readtable([ruta_txt filesep txtFiles(i).name]);
+    %     GT(:,1:2) = table2array(table(:,1:2));
+    %
+    %     GT=GT*fs;
+    %
+    %     %% Eliminar ruido
+    %     ventana=zeros(size(y));
+    %
+    %     for j=1:size(GT,1)
+    %         ventana(GT(j,1):GT(j,2),1)=1;
+    %     end
+    %
+    %     y = ventana.*y;
+    %
+    %     if (i~=1) && (size(y,1)~=size(ins_src,1))
+    %         tmp=zeros(size(ins_src,1)-size(y,1),1);
+    %         y=[y;tmp];
+    %         disp(['Tamano distinto en: ' DOriginal(i).name]);
+    %     end
+    %     ins_src=[ins_src y];
+    %
+    %     audiowrite([pathnameOriginal filesep DOriginal(i).name(1:end-4) '_ajmm.wav'],y,fs);
+    
+    %% Limpiar Baja frecuencia
+    [y] = limpia_baja_frec(y,param);
+    
+    %% Eliminar ruido
+    v_muestras=1000;
+    
+    for j=1:v_muestras:size(y,1)
+        if (j+v_muestras < size(y,1)) && (sum(abs(y(j:j+v_muestras)))<0.01)
+            y(j:j+v_muestras)=0;
+        elseif (j+v_muestras > size(y,1)) && (sum(abs(y(j:end)))<0.01)
+            y(j:end)=0;
+        end
+    end
+    
+    %% Guardar salida
+    % Corrige aquellas pistas de audio con tamano distinto.
+%     if (i~=1) && (size(y,1)~=size(ins_src,1))
+%         tmp=zeros(size(ins_src,1)-size(y,1),1);
+%         y=[y;tmp];
+%         disp(['Tamano distinto en: ' DOriginal(i).name]);
+%     end
+    
+    ins_src=[ins_src y];
+    audiowrite([path_out filesep DOriginal(i).name],y,fs);
+    
+end
+
+%% Mezcla sin ruido
+mix = sum(ins_src,2);
+
+audiowrite([path_out filesep 'mix.wav'],mix,fs);
